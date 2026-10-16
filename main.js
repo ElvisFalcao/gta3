@@ -3,7 +3,7 @@ import * as THREE from 'three';
 const $ = (id) => document.getElementById(id);
 const world = $('world');
 const state = {
-  x: -2.5, z: 4.4, heading: 0, keys: new Set(), pad: { x: 0, z: 0 },
+  x: -2.5, z: 4.4, heading: 0, targetHeading: 0, keys: new Set(), pad: { x: 0, z: 0 },
   respect: 12, chapter: 0, radioRewarded: false, freeTimeCount: 0,
   clock: 0, toastTimer: 0, modal: false, moving: false,
 };
@@ -343,13 +343,15 @@ function animate(){
   const mag=Math.hypot(forward,side);state.moving=mag>.08&&!state.modal;
   if(state.moving){
     forward/=Math.max(1,mag);side/=Math.max(1,mag);
-    const fx=Math.sin(state.heading),fz=-Math.cos(state.heading);
-    const rx=Math.cos(state.heading),rz=Math.sin(state.heading);
-    const vx=(fx*forward+rx*side)*6.1*dt,vz=(fz*forward+rz*side)*6.1*dt;
+    // Keep movement in the camera's fixed city-grid directions. The player can
+    // turn to face a new direction without rotating the camera reference frame.
+    const vx=side*6.1*dt,vz=-forward*6.1*dt;
     const nx=THREE.MathUtils.clamp(state.x+vx,-52,57),nz=THREE.MathUtils.clamp(state.z+vz,-56,56);
     if(!collides(nx,state.z))state.x=nx;if(!collides(state.x,nz))state.z=nz;
-    state.heading=Math.atan2(vx,-vz);
+    state.targetHeading=Math.atan2(vx,-vz);
   }
+  const turnDelta=Math.atan2(Math.sin(state.targetHeading-state.heading),Math.cos(state.targetHeading-state.heading));
+  state.heading+=turnDelta*(1-Math.exp(-10*dt));
   player.root.position.set(state.x,Math.sin(state.clock*10)*.025, state.z);player.root.rotation.y=state.heading;
   const swing=state.moving?Math.sin(state.clock*11)*.52:0;
   player.legs[0].rotation.x=swing;player.legs[1].rotation.x=-swing;
@@ -361,7 +363,7 @@ function animate(){
   });
   freePlaces.forEach(p=>{p.pin.rotation.y=state.clock*.65;p.pin.position.y=2.88+Math.sin(state.clock*2)*.14;p.circle.rotation.z=state.clock*.12});
   missionBeacon.pin.rotation.y=state.clock*.65;missionBeacon.pin.position.y=2.88+Math.sin(state.clock*2)*.14;missionBeacon.circle.rotation.z=state.clock*.12;
-  const follow= new THREE.Vector3(state.x-Math.sin(state.heading)*10, 6.4, state.z+Math.cos(state.heading)*10);
+  const follow= new THREE.Vector3(state.x, 6.4, state.z+10);
   camera.position.lerp(follow,1-Math.exp(-5*dt));camera.lookAt(state.x,1.0,state.z-1.6);
   updateContact();renderer.render(scene,camera);
 }
