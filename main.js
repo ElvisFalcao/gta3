@@ -3,9 +3,12 @@ import * as THREE from 'three';
 const $ = (id) => document.getElementById(id);
 const world = $('world');
 const state = {
-  x: -2.5, z: 4.4, heading: 0, targetHeading: 0, keys: new Set(), pad: { x: 0, z: 0 },
+  x: -2.5, z: 4.4, heading: 0, targetHeading: 0, cameraYaw: 0, cameraPitch: .57,
+  keys: new Set(), pad: { x: 0, z: 0 }, gamepad: null, gamepadButtons: [],
   respect: 12, chapter: 0, radioRewarded: false, freeTimeCount: 0,
-  clock: 0, toastTimer: 0, modal: false, moving: false,
+  clock: 0, toastTimer: 0, modal: false, moving: false, vehicle: null,
+  sprint: false, jumping: false, jumpTime: 0, punchTime: 0, punchCombo: 0,
+  choiceIndex: 0, paused: false, mapOpen: false, taxiJob: false,
 };
 
 const scene = new THREE.Scene();
@@ -156,12 +159,14 @@ function addCrossing(x,z,vertical=false) {
   }
 }
 addCrossing(0, 0, false); addCrossing(0,0,true);
+const vehicles=[];
 function addTaxi(x,z,rotation=0) {
   const g=new THREE.Group();g.position.set(x,.05,z);g.rotation.y=rotation;scene.add(g);
   box(g,0,.58,0,2.1,.58,3.6,mat('#d5bd64'));
   box(g,0,1.04,-.16,1.72,.55,1.68,mat('#b3c8bc',.35,{metalness:.12}));
   box(g,0,1.36,-.2,.62,.16,.5,mat('#f1e8cb'));
   for(const xx of [-.78,.78])for(const zz of [-1.1,1.1])cylinder(g,xx,.28,zz,.34,.34,.16,mats.dark,12).rotation.x=Math.PI/2;
+  const vehicle={group:g,speed:0,heading:rotation,parkedX:x,parkedZ:z};vehicles.push(vehicle);return vehicle;
 }
 addTaxi(-8,1,Math.PI/2); addTaxi(7,-1,Math.PI/2); addTaxi(26,-20,0);
 
@@ -270,7 +275,7 @@ function openDialog(id){
   if(!content)return;
   if((id==='zanele'&&state.chapter!==0)||(id==='lwazi'&&state.chapter!==1)||(id==='petersen'&&state.chapter!==2)){showToast('They are busy. Follow the current story lead.');return}
   $('dialog-kicker').textContent=content.kicker;$('dialog-title').textContent=content.title;$('dialog-copy').textContent=content.copy;
-  content.options.forEach(([label,copy,choice])=>{const btn=document.createElement('button');btn.className='choice';btn.innerHTML='<span>'+label+'</span>'+copy;btn.addEventListener('click',()=>choose(id,choice));choices.append(btn)});
+  state.choiceIndex=0;content.options.forEach(([label,copy,choice],i)=>{const btn=document.createElement('button');btn.className='choice';btn.style.outline=i===0?'2px solid #c7f36a':'';btn.innerHTML='<span>'+label+'</span>'+copy;btn.addEventListener('click',()=>choose(id,choice));choices.append(btn)});
   state.modal=true;modal.classList.add('open');
 }
 function choose(id,choice){
@@ -299,6 +304,85 @@ function interact(contact=nearestContact()){
   if(!contact){showToast('Walk closer or tap a character in the scene.');return}
   if(contact.kind==='person')openDialog(contact.actor.id);else openActivity(contact.place);
 }
+function punch(){
+  if(state.modal||state.vehicle)return;
+  state.punchCombo=state.clock-state.punchTime<.75?(state.punchCombo%3)+1:1;
+  state.punchTime=state.clock;state.punching=true;
+  showToast(['JAB','CROSS','HOOK'][state.punchCombo-1]+' · COMBO '+state.punchCombo);
+}
+function jump(){if(!state.modal&&!state.vehicle&&!state.jumping){state.jumping=true;state.jumpTime=0}}
+function nearestVehicle(){return vehicles.map(v=>({v,d:Math.hypot(state.x-v.group.position.x,state.z-v.group.position.z)})).sort((a,b)=>a.d-b.d)[0]}
+function toggleVehicle(){
+  if(state.vehicle){const v=state.vehicle;state.x=v.group.position.x+Math.cos(state.heading)*2;state.z=v.group.position.z-Math.sin(state.heading)*2;state.vehicle=null;player.root.visible=true;showToast('You stepped out of the taxi.');return}
+  const nearest=nearestVehicle();
+  if(!nearest||nearest.d>4.5){showToast('Walk up to a yellow taxi and press Y.');return}
+  state.vehicle=nearest.v;state.x=nearest.v.group.position.x;state.z=nearest.v.group.position.z;
+  state.heading=nearest.v.heading;state.targetHeading=state.heading;player.root.visible=false;showToast('Taxi ready · RT to drive, LT to reverse.');
+}
+function horn(){showToast('BEEP BEEP · Taxi horn')}
+function startTaxiJob(){
+  state.taxiJob=!state.taxiJob;
+  showToast(state.taxiJob?'Taxi shift started · pick up a passenger around Salt River.':'Taxi shift ended.');
+}
+function openMap(){if(state.paused)togglePause();state.mapOpen=!state.mapOpen;$('map-panel').classList.toggle('open',state.mapOpen);state.modal=state.mapOpen}
+function togglePause(){if(state.mapOpen)openMap();state.paused=!state.paused;$('pause-panel').classList.toggle('open',state.paused);state.modal=state.paused}
+function closeTopLayer(){
+  if(state.mapOpen){openMap();return}
+  if(state.paused){togglePause();return}
+  if(state.modal){$('dialog').classList.remove('open');closeActivity();state.modal=false;return}
+}
+function confirmChoice(){
+  if(state.paused){togglePause();return}
+  if(state.mapOpen){openMap();return}
+  if($('dialog').classList.contains('open')){$('choices').querySelectorAll('.choice')[state.choiceIndex]?.click();return}
+  if($('activity').classList.contains('open')){$('do-activity').click();return}
+  interact();
+}
+function moveChoice(step){
+  if(!$('dialog').classList.contains('open'))return;
+  const choices=[...$('choices').querySelectorAll('.choice')];if(!choices.length)return;
+  state.choiceIndex=(state.choiceIndex+step+choices.length)%choices.length;
+  choices.forEach((choice,i)=>choice.style.outline=i===state.choiceIndex?'2px solid #c7f36a':'');
+}
+function pressGamepadButton(index){
+  const buttons=state.gamepad?.buttons||[];return !!buttons[index]?.pressed;
+}
+function gamepadEdge(index){const now=pressGamepadButton(index),was=!!state.gamepadButtons[index];state.gamepadButtons[index]=now;return now&&!was}
+function pollGamepad(dt=0){
+  const pads=navigator.getGamepads?.()||[];const pad=[...pads].find(g=>g&&g.connected);
+  state.gamepad=pad||null;
+  $('gamepad-status').textContent=pad?'CONNECTED · '+(pad.id.split(' (')[0].slice(0,34)):'CONNECT AN XBOX STYLE CONTROLLER';
+  if(!pad){state.gamepadButtons=[];state.pad={x:0,z:0};return}
+  const edges=Array.from({length:16},(_,i)=>gamepadEdge(i));
+  const dead=.18,axis=(n)=>Math.abs(pad.axes[n]||0)>dead?pad.axes[n]:0;
+  const leftX=axis(0),leftY=axis(1),rightX=axis(2),rightY=axis(3);
+  state.pad={x:leftX,z:-leftY};state.cameraInput={x:rightX,y:rightY};
+  state.sprint=pressGamepadButton(0);
+  if(edges[0])confirmChoice();
+  if(edges[1]){if(state.modal)closeTopLayer();else punch()}
+  if(edges[2])jump();
+  if(edges[3])toggleVehicle();
+  if(edges[4])interact();
+  if(pressGamepadButton(5)&&state.vehicle){state.vehicle.speed*=.82;if(Math.abs(state.vehicle.speed)<.12)state.vehicle.speed=0}
+  if(edges[8])openMap();
+  if(edges[9])togglePause();
+  if(edges[10])horn();
+  if(edges[11]){state.cameraYaw=state.heading;state.cameraPitch=.57;showToast('Camera snapped behind Thabo.');}
+  if(edges[12])moveChoice(-1);
+  if(edges[13]){if($('dialog').classList.contains('open'))moveChoice(1);else startTaxiJob()}
+  if(edges[14])showToast('Radio · Cape Town community station');
+  if(edges[15])showToast('Taxi radio tuned · local traffic updates');
+  const lt=pad.buttons[6]?.value||0,rt=pad.buttons[7]?.value||0;
+  if(state.vehicle&&!state.modal){state.vehicle.speed+=(rt-lt*.8)*dt*16;state.vehicle.speed=THREE.MathUtils.clamp(state.vehicle.speed,-5,12)}
+  else if(rt>.62&&edges[7])punch();
+}
+window.addEventListener('gamepadconnected',()=>showToast('Controller connected · Xbox controls ready'));
+window.addEventListener('gamepaddisconnected',()=>{state.gamepad=null;state.pad={x:0,z:0};showToast('Controller disconnected')});
+$('guide-toggle').addEventListener('click',()=>$('controller-guide').classList.toggle('open'));
+$('guide-close').addEventListener('click',()=>$('controller-guide').classList.remove('open'));
+$('close-map').addEventListener('click',()=>{if(state.mapOpen)openMap()});
+$('resume-game').addEventListener('click',()=>{if(state.paused)togglePause()});
+$('choices').addEventListener('click',()=>{state.choiceIndex=0});
 $('action').addEventListener('click',()=>interact());
 $('explore').addEventListener('click',()=>showToast('Follow the street. Tap people to hear their stories.'));
 $('close-dialog').addEventListener('click',()=>{$('dialog').classList.remove('open');state.modal=false});
@@ -325,9 +409,14 @@ touchpad.querySelectorAll('button').forEach(btn=>{
 });
 window.addEventListener('keydown',e=>{
   if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();
-  state.keys.add(e.key.toLowerCase());
-  if(e.key.toLowerCase()==='e'||e.key===' ')interact();
-  if(e.key==='Escape'){ $('dialog').classList.remove('open');closeActivity();state.modal=false; }
+  const key=e.key.toLowerCase(),fresh=!state.keys.has(key);state.keys.add(key);
+  if(!fresh)return;
+  if(key==='e')interact();
+  if(key===' '){if(state.modal)confirmChoice();else jump()}
+  if(key==='x')jump();if(key==='b')punch();if(key==='y')toggleVehicle();if(key==='r')horn();
+  if(key==='m')openMap();if(key==='p')togglePause();
+  if(key==='escape')closeTopLayer();
+  if(key==='arrowup')moveChoice(-1);if(key==='arrowdown')moveChoice(1);
 });
 window.addEventListener('keyup',e=>state.keys.delete(e.key.toLowerCase()));
 window.addEventListener('blur',()=>state.keys.clear());
@@ -337,25 +426,44 @@ const clock=new THREE.Clock();
 function animate(){
   requestAnimationFrame(animate);
   const dt=Math.min(clock.getDelta(),.04);state.clock+=dt;
+  pollGamepad(dt);
   const k=state.keys;
   let forward=(k.has('w')||k.has('arrowup')?1:0)-(k.has('s')||k.has('arrowdown')?1:0)+state.pad.z;
   let side=(k.has('d')||k.has('arrowright')?1:0)-(k.has('a')||k.has('arrowleft')?1:0)+state.pad.x;
-  const mag=Math.hypot(forward,side);state.moving=mag>.08&&!state.modal;
+  const cameraInput=state.cameraInput||{x:0,y:0};
+  if(!state.modal){state.cameraYaw-=cameraInput.x*dt*2.2;state.cameraPitch=THREE.MathUtils.clamp(state.cameraPitch-cameraInput.y*dt*1.2,.2,1.15)}
+  state.sprint=!!(k.has('shift')||state.gamepad&&pressGamepadButton(0));
+  if(state.vehicle&&!state.modal){state.vehicle.speed+=(k.has('w')?7:0)*dt-(k.has('s')?8:0)*dt;state.vehicle.speed=THREE.MathUtils.clamp(state.vehicle.speed,-5,12)}
+  const mag=Math.hypot(forward,side);state.moving=(mag>.08||state.vehicle&&Math.abs(state.vehicle.speed)>.08)&&!state.modal;
   if(state.moving){
     forward/=Math.max(1,mag);side/=Math.max(1,mag);
-    // Keep movement in the camera's fixed city-grid directions. The player can
-    // turn to face a new direction without rotating the camera reference frame.
-    const vx=side*6.1*dt,vz=-forward*6.1*dt;
-    const nx=THREE.MathUtils.clamp(state.x+vx,-52,57),nz=THREE.MathUtils.clamp(state.z+vz,-56,56);
-    if(!collides(nx,state.z))state.x=nx;if(!collides(state.x,nz))state.z=nz;
-    state.targetHeading=Math.atan2(vx,-vz);
+    if(state.vehicle){
+      state.heading+=side*dt*1.65;
+      const speed=state.vehicle.speed;
+      const nx=THREE.MathUtils.clamp(state.x+Math.sin(state.heading)*speed*dt,-52,57);
+      const nz=THREE.MathUtils.clamp(state.z-Math.cos(state.heading)*speed*dt,-56,56);
+      if(!collides(nx,state.z))state.x=nx;else state.vehicle.speed=0;
+      if(!collides(state.x,nz))state.z=nz;else state.vehicle.speed=0;
+      state.vehicle.group.position.set(state.x,.05,state.z);state.vehicle.heading=state.heading;state.vehicle.group.rotation.y=state.heading;
+    }else{
+      // Walk relative to the view direction so the left stick remains natural while looking around.
+      const speed=6.1*(state.sprint?1.7:1);
+      const vx=(side*Math.cos(state.cameraYaw)+forward*Math.sin(state.cameraYaw))*speed*dt;
+      const vz=(-side*Math.sin(state.cameraYaw)-forward*Math.cos(state.cameraYaw))*speed*dt;
+      const nx=THREE.MathUtils.clamp(state.x+vx,-52,57),nz=THREE.MathUtils.clamp(state.z+vz,-56,56);
+      if(!collides(nx,state.z))state.x=nx;if(!collides(state.x,nz))state.z=nz;
+      state.targetHeading=Math.atan2(vx,-vz);
+    }
   }
   const turnDelta=Math.atan2(Math.sin(state.targetHeading-state.heading),Math.cos(state.targetHeading-state.heading));
   state.heading+=turnDelta*(1-Math.exp(-10*dt));
-  player.root.position.set(state.x,Math.sin(state.clock*10)*.025, state.z);player.root.rotation.y=state.heading;
+  if(state.jumping){state.jumpTime+=dt;if(state.jumpTime>.75)state.jumping=false}
+  const hop=state.jumping?Math.sin(Math.min(state.jumpTime/.75,1)*Math.PI)*1.35:0;
+  player.root.position.set(state.x,Math.sin(state.clock*10)*.025+hop, state.z);player.root.rotation.y=state.heading;
   const swing=state.moving?Math.sin(state.clock*11)*.52:0;
+  const punchPose=state.clock-state.punchTime<.3?Math.sin((state.clock-state.punchTime)/.3*Math.PI):0;
   player.legs[0].rotation.x=swing;player.legs[1].rotation.x=-swing;
-  player.arms[0].rotation.x=-swing*.68;player.arms[1].rotation.x=swing*.68;
+  player.arms[0].rotation.x=-swing*.68-punchPose*1.4;player.arms[1].rotation.x=swing*.68-punchPose*1.4;
   actors.forEach((a,i)=>{
     if(a.id==='lwazi'&&state.chapter<1)a.label.material.opacity=.8;
     a.root.position.y=Math.sin(state.clock*1.7+i)*.018;
@@ -363,13 +471,14 @@ function animate(){
   });
   freePlaces.forEach(p=>{p.pin.rotation.y=state.clock*.65;p.pin.position.y=2.88+Math.sin(state.clock*2)*.14;p.circle.rotation.z=state.clock*.12});
   missionBeacon.pin.rotation.y=state.clock*.65;missionBeacon.pin.position.y=2.88+Math.sin(state.clock*2)*.14;missionBeacon.circle.rotation.z=state.clock*.12;
-  const follow= new THREE.Vector3(state.x, 6.4, state.z+10);
-  camera.position.lerp(follow,1-Math.exp(-5*dt));camera.lookAt(state.x,1.0,state.z-1.6);
+  const radius=10,cp=Math.cos(state.cameraPitch),sp=Math.sin(state.cameraPitch);
+  const follow=new THREE.Vector3(state.x+Math.sin(state.cameraYaw)*radius*cp,1+radius*sp,state.z+Math.cos(state.cameraYaw)*radius*cp);
+  camera.position.lerp(follow,1-Math.exp(-5*dt));camera.lookAt(state.x,1,state.z);
   updateContact();renderer.render(scene,camera);
 }
 
 window.addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setPixelRatio(Math.min(devicePixelRatio||1,1.5));renderer.setSize(innerWidth,innerHeight)});
-camera.position.set(state.x,6.4,state.z+10);camera.lookAt(state.x,1,state.z-1.6);
+camera.position.set(state.x,1+10*Math.sin(state.cameraPitch),state.z+10*Math.cos(state.cameraPitch));camera.lookAt(state.x,1,state.z);
 player.root.userData.actorId='player';
 setChapter(0);updateContact();$('loading').classList.add('hidden');animate();
 
