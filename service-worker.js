@@ -1,5 +1,5 @@
-const CACHE = 'mother-city-shell-v2';
-const FILES = ['./', './index.html', './main.js', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './vendor/three.module.js'];
+const CACHE = 'mother-city-shell-v3';
+const FILES = ['./', './index.html', './main.js', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './vendor/three.module.js', './vendor/three.core.js'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(FILES)).then(() => self.skipWaiting()));
 });
