@@ -51,6 +51,12 @@
   <section class="activity" id="activity"><div class="eyebrow" id="activity-kicker"></div><h2 id="activity-title"></h2><p id="activity-copy"></p><div class="activity-actions"><button class="explore-btn" id="leave-activity">Not now</button><button class="action-btn" id="do-activity">Take a moment ↗</button></div></section>
   <div class="error" id="error"><h2>THE CITY IS STILL LOADING</h2><p id="error-copy">This 3D prototype needs WebGL and an internet connection to load the game engine. Please refresh the page and try again.</p></div>
 </main>
+<script>
+if ('serviceWorker' in navigator && window.self === window.top && (!['localhost','127.0.0.1','::1'].includes(location.hostname) || new URLSearchParams(location.search).has('sw'))) {
+  navigator.serviceWorker.addEventListener('controllerchange', () => location.reload());
+  navigator.serviceWorker.register('./service-worker.js').then(registration => registration.update()).catch(() => {});
+}
+</script>
 <script type="module" src="./main.js"></script>
 </body>
 </html>
