@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 10529)
-Total output lines: 562
-
 import * as THREE from 'three';
 
 const $ = (id) => document.getElementById(id);
@@ -182,6 +179,7 @@ function addTaxi(x,z,rotation=0) {
 }
 addTaxi(-8,1,Math.PI/2); addTaxi(7,-1,Math.PI/2); addTaxi(26,-20,0);
 
+
 function makeActor({ id, name, role, x, z, shirt, hair, active = true, player = false }) {
   const root = new THREE.Group(); root.position.set(x, 0, z); scene.add(root);
   const skin=mat('#ad754f'), shirtMat=mat(shirt), trousers=mat('#323c36'), hairMat=mat(hair);
@@ -298,7 +296,18 @@ function voice(text, actor=null, priority=1){
   const utterance=new SpeechSynthesisUtterance(text);utterance.lang='en-ZA';utterance.rate=.92;utterance.pitch=actor?.id==='zanele'?.84:actor?.id==='lwazi'?1.08:.98;
   const voices=speechSynthesis.getVoices();utterance.voice=voices.find(v=>/^en-ZA/i.test(v.lang))||voices.find(v=>/^en-(GB|IE|AU|NZ)/i.test(v.lang))||null;
   const finish=()=>{if(state.activeVoice?.actor===actor){state.activeVoice=null;bubble.classList.remove('show')}};
-  utterance.onend=finish;utteran…529 tokens truncated…A · COMMUNITY RADIO HOST',title:'“Good to see you out here.”',copy:'Nomsa is collecting voices for the morning show. She’s heard the garden deeds story too. “People will show up for a place they believe in.”',options:[[state.radioRewarded?'KEEP IN TOUCH':'JOIN THE CONVERSATION','Share the garden story on air and rally the neighbourhood.','radio'],['KEEP MOVING','There’s more to explore around Salt River.','later']]},
+  utterance.onend=finish;utterance.onerror=finish;speechSynthesis.speak(utterance);
+}
+function streetTalk(category,actor=null,priority=1){const lines=streetLines[category];if(lines)voice(lines[Math.floor(Math.random()*lines.length)],actor,priority)}
+function showToast(text){const el=$('toast');el.textContent=text;el.classList.add('show');clearTimeout(state.toastTimer);state.toastTimer=setTimeout(()=>el.classList.remove('show'),2300)}
+function giveRespect(amount,reason){state.respect+=amount;$('respect').textContent=String(state.respect).padStart(3,'0');saveGame();showToast('+'+amount+' RESPECT · '+reason)}
+function openDialog(id){
+  const modal=$('dialog'),choices=$('choices');choices.innerHTML='';
+  const content={
+    zanele:{kicker:'AUNTY ZANELE · GARDEN ORGANISER',title:'“You look like you know how to listen.”',copy:'The deeds were in a blue folder. Last I saw it, a courier was asking questions by the old cinema. Folks say he left in a hurry when the trains started.',options:[['01 · Build trust','“Let’s retrace what happened. I’ll ask around and bring the folder back.”','trust'],['02 · Make a deal','“I can find the courier. Tell me what the garden means to the ward.”','deal']]},
+    lwazi:{kicker:'LWAZI · BIKE COURIER',title:'“I didn’t take your folder.”',copy:'Lwazi remembers a city contractor near the Community Hall. He can show you the route, but his bike chain is a mess and he has a delivery to make.',options:[['01 · Help out','Fix his chain and walk the route together. Get the full story.','help'],['02 · Negotiate','Offer to cover the delivery. Get the clerk’s address now.','negotiate']]},
+    petersen:{kicker:'MR PETERSEN · CITY RECORDS CLERK',title:'“These deeds were filed under the wrong ward.”',copy:'The blue folder was misrouted during a boundary update. The garden is safe, but the community should decide what happens next.',options:[['01 · Return the deeds','Take them straight back to Aunty Zanele and the garden crew.','return'],['02 · Put it on the record','Ask Nomsa to broadcast the correction so the whole ward knows.','publish']]},
+    nomsa:{kicker:'NOMSA · COMMUNITY RADIO HOST',title:'“Good to see you out here.”',copy:'Nomsa is collecting voices for the morning show. She’s heard the garden deeds story too. “People will show up for a place they believe in.”',options:[[state.radioRewarded?'KEEP IN TOUCH':'JOIN THE CONVERSATION','Share the garden story on air and rally the neighbourhood.','radio'],['KEEP MOVING','There’s more to explore around Salt River.','later']]},
   }[id];
   if(!content)return;
   if((id==='zanele'&&state.chapter!==0)||(id==='lwazi'&&state.chapter!==1)||(id==='petersen'&&state.chapter!==2)){showToast('They are busy. Follow the current story lead.');return}
@@ -350,6 +359,7 @@ function toggleVehicle(){
   state.heading=nearest.v.heading;state.targetHeading=state.heading;player.root.visible=false;showToast('Taxi ready · RT to drive, LT to reverse.');
 }
 function horn(){showToast('BEEP BEEP · Taxi horn');const target=actors.filter(a=>!a.player).map(a=>({a,d:distance(player,a)})).filter(x=>x.d<15).sort((a,b)=>a.d-b.d)[0];if(target)streetTalk('honked',target.a,2)}
+
 function startTaxiJob(){
   state.taxiJob=!state.taxiJob;
   showToast(state.taxiJob?'Taxi shift started · pick up a passenger around Salt River.':'Taxi shift ended.');
