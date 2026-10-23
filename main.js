@@ -1,15 +1,27 @@
+Warning: truncated output (original token count: 10529)
+Total output lines: 562
+
 import * as THREE from 'three';
 
 const $ = (id) => document.getElementById(id);
 const world = $('world');
 const state = {
   x: -2.5, z: 4.4, heading: 0, targetHeading: 0, cameraYaw: 0, cameraPitch: .57,
-  keys: new Set(), pad: { x: 0, z: 0 }, gamepad: null, gamepadButtons: [],
+  keys: new Set(), pad: { x: 0, z: 0 }, touch: {}, gamepad: null, gamepadButtons: [],
+  usingGamepad: false, lastInputDevice: 'keyboard', throttle: 0, handbrake: false,
   respect: 12, chapter: 0, radioRewarded: false, freeTimeCount: 0,
   clock: 0, toastTimer: 0, modal: false, moving: false, vehicle: null,
   sprint: false, jumping: false, jumpTime: 0, punchTime: 0, punchCombo: 0,
   choiceIndex: 0, paused: false, mapOpen: false, taxiJob: false,
+  voiceMode: 'voices', voiceTimer: 0, activeVoice: null, speechQueue: [],
 };
+
+const savedGame = (() => { try { return JSON.parse(localStorage.getItem('mother-city-save') || '{}'); } catch { return {}; } })();
+if (Number.isFinite(savedGame.chapter)) state.chapter = THREE.MathUtils.clamp(savedGame.chapter, 0, 3);
+if (Number.isFinite(savedGame.respect)) state.respect = Math.max(12, savedGame.respect);
+state.radioRewarded = !!savedGame.radioRewarded;
+state.freeTimeCount = Math.max(0, Number(savedGame.freeTimeCount) || 0);
+if(['voices','bubbles','off'].includes(savedGame.voiceMode))state.voiceMode=savedGame.voiceMode;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#91b4af');
@@ -254,36 +266,54 @@ function nearestContact(){
 
 function updateContact(){
   const contact=nearestContact(),button=$('action');
+  const carNearby=!state.vehicle&&nearestVehicle()?.d<4.5;
+  $('touch-actions').classList.toggle('driving',!!state.vehicle);
+  $('touch-actions').querySelector('[data-touch="vehicle"]').classList.toggle('available',!!carNearby);
   button.disabled=!contact;button.textContent=contact?(contact.kind==='person'?'Talk':'Visit')+' ↗':'Talk ↗';
   const target=objectiveActor();
   $('direction').classList.toggle('active',!!target&&!contact&&Math.hypot(target.root.position.x-player.root.position.x,target.root.position.z-player.root.position.z)>5);
   if(contact){$('hint').innerHTML='<b>'+ (contact.kind==='person'?'TAP TALK':'TAP VISIT')+'</b> · '+(contact.kind==='person'?contact.actor.name:contact.place.label)}
-  else $('hint').innerHTML='<b>MOVE</b> WASD / arrows &nbsp; · &nbsp; <b>TAP</b> a person to speak';
+  else $('hint').innerHTML=state.usingGamepad?'<b>LS</b> MOVE &nbsp; · &nbsp; <b>LB</b> TALK':'<b>MOVE</b> WASD / arrows &nbsp; · &nbsp; <b>TAP</b> a person to speak';
   return contact;
 }
 
-function showToast(text){const el=$('toast');el.textContent=text;el.classList.add('show');clearTimeout(state.toastTimer);state.toastTimer=setTimeout(()=>el.classList.remove('show'),2300)}
-function giveRespect(amount,reason){state.respect+=amount;$('respect').textContent=String(state.respect).padStart(3,'0');showToast('+'+amount+' RESPECT · '+reason)}
-function openDialog(id){
-  const modal=$('dialog'),choices=$('choices');choices.innerHTML='';
-  const content={
-    zanele:{kicker:'AUNTY ZANELE · GARDEN ORGANISER',title:'“You look like you know how to listen.”',copy:'The deeds were in a blue folder. Last I saw it, a courier was asking questions by the old cinema. Folks say he left in a hurry when the trains started.',options:[['01 · Build trust','“Let’s retrace what happened. I’ll ask around and bring the folder back.”','trust'],['02 · Make a deal','“I can find the courier. Tell me what the garden means to the ward.”','deal']]},
-    lwazi:{kicker:'LWAZI · BIKE COURIER',title:'“I didn’t take your folder.”',copy:'Lwazi remembers a city contractor near the Community Hall. He can show you the route, but his bike chain is a mess and he has a delivery to make.',options:[['01 · Help out','Fix his chain and walk the route together. Get the full story.','help'],['02 · Negotiate','Offer to cover the delivery. Get the clerk’s address now.','negotiate']]},
-    petersen:{kicker:'MR PETERSEN · CITY RECORDS CLERK',title:'“These deeds were filed under the wrong ward.”',copy:'The blue folder was misrouted during a boundary update. The garden is safe, but the community should decide what happens next.',options:[['01 · Return the deeds','Take them straight back to Aunty Zanele and the garden crew.','return'],['02 · Put it on the record','Ask Nomsa to broadcast the correction so the whole ward knows.','publish']]},
-    nomsa:{kicker:'NOMSA · COMMUNITY RADIO HOST',title:'“Good to see you out here.”',copy:'Nomsa is collecting voices for the morning show. She’s heard the garden deeds story too. “People will show up for a place they believe in.”',options:[[state.radioRewarded?'KEEP IN TOUCH':'JOIN THE CONVERSATION','Share the garden story on air and rally the neighbourhood.','radio'],['KEEP MOVING','There’s more to explore around Salt River.','later']]},
+function saveGame(){
+  try{localStorage.setItem('mother-city-save',JSON.stringify({chapter:state.chapter,respect:state.respect,radioRewarded:state.radioRewarded,freeTimeCount:state.freeTimeCount,voiceMode:state.voiceMode}))}catch{}
+}
+const streetLines={
+  greet:['Molo, bhuti. You new around here?','Howzit, sisi. Lovely day in the Mother City.','Sharp, my friend. Keep looking out for the neighbourhood.'],
+  ambient:['Train’s running late again. Some things never change.','The mountain looks clear today. Maybe we get a sunset after all.','Someone’s always got a story on this street.'],
+  beach:['That sea air sorts out a busy head.','Careful on the rocks, hey. Tide’s coming in.'],
+  gym:['One more rep, then we talk.','The gym keeps the whole block strong.'],
+  bumped:['Easy there, bru!','Watch where you’re going!'],
+  honked:['I hear you! The whole street heard you.','Yoh, no need to wake the mountain!'],
+};
+function voice(text, actor=null, priority=1){
+  if(state.voiceMode==='off'||!text)return;
+  if(state.paused){window.speechSynthesis?.cancel();return}
+  if(state.activeVoice&&priority<state.activeVoice.priority)return;
+  window.speechSynthesis?.cancel();state.activeVoice={priority,actor};
+  const bubble=$('speech-bubble');bubble.textContent=text;bubble.classList.add('show');
+  if(state.voiceMode!=='voices'||!('speechSynthesis'in window)){setTimeout(()=>{if(state.activeVoice?.actor===actor){state.activeVoice=null;bubble.classList.remove('show')}},2800);return}
+  const utterance=new SpeechSynthesisUtterance(text);utterance.lang='en-ZA';utterance.rate=.92;utterance.pitch=actor?.id==='zanele'?.84:actor?.id==='lwazi'?1.08:.98;
+  const voices=speechSynthesis.getVoices();utterance.voice=voices.find(v=>/^en-ZA/i.test(v.lang))||voices.find(v=>/^en-(GB|IE|AU|NZ)/i.test(v.lang))||null;
+  const finish=()=>{if(state.activeVoice?.actor===actor){state.activeVoice=null;bubble.classList.remove('show')}};
+  utterance.onend=finish;utteran…529 tokens truncated…A · COMMUNITY RADIO HOST',title:'“Good to see you out here.”',copy:'Nomsa is collecting voices for the morning show. She’s heard the garden deeds story too. “People will show up for a place they believe in.”',options:[[state.radioRewarded?'KEEP IN TOUCH':'JOIN THE CONVERSATION','Share the garden story on air and rally the neighbourhood.','radio'],['KEEP MOVING','There’s more to explore around Salt River.','later']]},
   }[id];
   if(!content)return;
   if((id==='zanele'&&state.chapter!==0)||(id==='lwazi'&&state.chapter!==1)||(id==='petersen'&&state.chapter!==2)){showToast('They are busy. Follow the current story lead.');return}
   $('dialog-kicker').textContent=content.kicker;$('dialog-title').textContent=content.title;$('dialog-copy').textContent=content.copy;
   state.choiceIndex=0;content.options.forEach(([label,copy,choice],i)=>{const btn=document.createElement('button');btn.className='choice';btn.style.outline=i===0?'2px solid #c7f36a':'';btn.innerHTML='<span>'+label+'</span>'+copy;btn.addEventListener('click',()=>choose(id,choice));choices.append(btn)});
   state.modal=true;modal.classList.add('open');
+  voice(content.title.replace(/[“”]/g,''),actorById[id],4);
 }
 function choose(id,choice){
-  $('dialog').classList.remove('open');state.modal=false;
+  $('dialog').classList.remove('open');state.modal=false;window.speechSynthesis?.cancel();$('speech-bubble').classList.remove('show');state.activeVoice=null;
   if(id==='zanele'){giveRespect(5,'Aunty Zanele trusts you');setChapter(1)}
   if(id==='lwazi'){giveRespect(choice==='help'?8:5,'New lead unlocked');setChapter(2)}
   if(id==='petersen'){giveRespect(choice==='publish'?15:12,'Chapter complete');setChapter(3)}
   if(id==='nomsa'){if(!state.radioRewarded){state.radioRewarded=true;giveRespect(4,'Your story travels')}else showToast('Nomsa is back on air after the break.')}
+  saveGame();
   if(choice==='later')showToast('Salt River has plenty more stories.');updateContact();
 }
 
@@ -319,17 +349,18 @@ function toggleVehicle(){
   state.vehicle=nearest.v;state.x=nearest.v.group.position.x;state.z=nearest.v.group.position.z;
   state.heading=nearest.v.heading;state.targetHeading=state.heading;player.root.visible=false;showToast('Taxi ready · RT to drive, LT to reverse.');
 }
-function horn(){showToast('BEEP BEEP · Taxi horn')}
+function horn(){showToast('BEEP BEEP · Taxi horn');const target=actors.filter(a=>!a.player).map(a=>({a,d:distance(player,a)})).filter(x=>x.d<15).sort((a,b)=>a.d-b.d)[0];if(target)streetTalk('honked',target.a,2)}
 function startTaxiJob(){
   state.taxiJob=!state.taxiJob;
   showToast(state.taxiJob?'Taxi shift started · pick up a passenger around Salt River.':'Taxi shift ended.');
 }
-function openMap(){if(state.paused)togglePause();state.mapOpen=!state.mapOpen;$('map-panel').classList.toggle('open',state.mapOpen);state.modal=state.mapOpen}
-function togglePause(){if(state.mapOpen)openMap();state.paused=!state.paused;$('pause-panel').classList.toggle('open',state.paused);state.modal=state.paused}
+function stopVoices(){window.speechSynthesis?.cancel();$('speech-bubble').classList.remove('show');state.activeVoice=null}
+function openMap(){if(state.paused)togglePause();state.mapOpen=!state.mapOpen;$('map-panel').classList.toggle('open',state.mapOpen);state.modal=state.mapOpen;if(state.mapOpen)stopVoices()}
+function togglePause(){if(state.mapOpen)openMap();state.paused=!state.paused;$('pause-panel').classList.toggle('open',state.paused);state.modal=state.paused;if(state.paused)stopVoices()}
 function closeTopLayer(){
   if(state.mapOpen){openMap();return}
   if(state.paused){togglePause();return}
-  if(state.modal){$('dialog').classList.remove('open');closeActivity();state.modal=false;return}
+  if(state.modal){$('dialog').classList.remove('open');closeActivity();state.modal=false;stopVoices();return}
 }
 function confirmChoice(){
   if(state.paused){togglePause();return}
@@ -344,48 +375,56 @@ function moveChoice(step){
   state.choiceIndex=(state.choiceIndex+step+choices.length)%choices.length;
   choices.forEach((choice,i)=>choice.style.outline=i===state.choiceIndex?'2px solid #c7f36a':'');
 }
-function pressGamepadButton(index){
-  const buttons=state.gamepad?.buttons||[];return !!buttons[index]?.pressed;
-}
-function gamepadEdge(index){const now=pressGamepadButton(index),was=!!state.gamepadButtons[index];state.gamepadButtons[index]=now;return now&&!was}
+function pressGamepadButton(index){const b=state.gamepad?.buttons?.[index];return !!(b?.pressed||(b?.value||0)>.55)}
+function dz(value){const v=Number.isFinite(value)?value:0;return Math.abs(v)<.18?0:(v-Math.sign(v)*.18)/.82}
+function noteInput(device){state.lastInputDevice=device;state.usingGamepad=device==='gamepad';$('touchpad').classList.toggle('gamepad-active',state.usingGamepad);$('touch-actions').classList.toggle('gamepad-active',state.usingGamepad)}
+function gamepadEdge(index,now=pressGamepadButton(index)){const was=!!state.gamepadButtons[index];state.gamepadButtons[index]=now;return now&&!was}
 function pollGamepad(dt=0){
   const pads=navigator.getGamepads?.()||[];const pad=[...pads].find(g=>g&&g.connected);
   state.gamepad=pad||null;
   $('gamepad-status').textContent=pad?'CONNECTED · '+(pad.id.split(' (')[0].slice(0,34)):'CONNECT AN XBOX STYLE CONTROLLER';
-  if(!pad){state.gamepadButtons=[];state.pad={x:0,z:0};return}
-  const edges=Array.from({length:16},(_,i)=>gamepadEdge(i));
-  const dead=.18,axis=(n)=>Math.abs(pad.axes[n]||0)>dead?pad.axes[n]:0;
-  const leftX=axis(0),leftY=axis(1),rightX=axis(2),rightY=axis(3);
-  state.pad={x:leftX,z:-leftY};state.cameraInput={x:rightX,y:rightY};
-  state.sprint=pressGamepadButton(0);
+  if(!pad){state.gamepadButtons=[];state.pad.x=state.touch.x||0;state.pad.z=state.touch.z||0;state.cameraInput={x:0,y:0};return}
+  const axes=pad.axes||[],lx=dz(axes[0]),ly=dz(axes[1]),rx=dz(axes[2]),ry=dz(axes[3]);
+  const mag=Math.hypot(lx,ly),scale=mag>1?1/mag:1;
+  const buttons=Array.from({length:16},(_,i)=>pressGamepadButton(i));
+  const edges=buttons.map((down,i)=>gamepadEdge(i,down));
+  const active=mag>.18||Math.hypot(rx,ry)>.18||buttons.some(Boolean);
+  if(active&&state.lastInputDevice!=='gamepad')noteInput('gamepad');
+  state.pad={x:(state.touch.x||0)+lx*scale,z:(state.touch.z||0)-ly*scale};
+  state.cameraInput={x:rx,y:ry};
+  state.sprint=buttons[0]||state.keys.has('shift')||!!state.touch.run;
+  state.handbrake=buttons[5]||!!state.touch.handbrake;
+  const trigger=(i)=>Math.max(pad.buttons?.[i]?.value||0,pad.buttons?.[i]?.pressed?1:0);
+  const lt=trigger(6),rt=trigger(7);state.throttle=rt-lt;
   if(edges[0])confirmChoice();
   if(edges[1]){if(state.modal)closeTopLayer();else punch()}
   if(edges[2])jump();
   if(edges[3])toggleVehicle();
-  if(edges[4])interact();
-  if(pressGamepadButton(5)&&state.vehicle){state.vehicle.speed*=.82;if(Math.abs(state.vehicle.speed)<.12)state.vehicle.speed=0}
+  if(edges[4]){if(state.mapOpen)showToast('Previous map tab');else interact()}
+  if(edges[5]&&!state.vehicle){if(state.mapOpen)showToast('Next map tab');else if(!state.modal)interact()}
   if(edges[8])openMap();
   if(edges[9])togglePause();
   if(edges[10])horn();
-  if(edges[11]){state.cameraYaw=state.heading;state.cameraPitch=.57;showToast('Camera snapped behind Thabo.');}
+  if(edges[11]){state.cameraYaw=state.heading;state.cameraPitch=.57;showToast('Camera snapped behind Thabo.')}
   if(edges[12])moveChoice(-1);
   if(edges[13]){if($('dialog').classList.contains('open'))moveChoice(1);else startTaxiJob()}
   if(edges[14])showToast('Radio · Cape Town community station');
-  if(edges[15])showToast('Taxi radio tuned · local traffic updates');
-  const lt=pad.buttons[6]?.value||0,rt=pad.buttons[7]?.value||0;
-  if(state.vehicle&&!state.modal){state.vehicle.speed+=(rt-lt*.8)*dt*16;state.vehicle.speed=THREE.MathUtils.clamp(state.vehicle.speed,-5,12)}
-  else if(rt>.62&&edges[7])punch();
+  if(edges[15]){if(state.mapOpen)showToast('Map tab · Salt River');else showToast('Taxi radio tuned · local traffic updates')}
+  if(state.vehicle&&state.handbrake){state.vehicle.speed*=Math.exp(-8*dt);if(Math.abs(state.vehicle.speed)<.12)state.vehicle.speed=0}
+  if(!state.vehicle&&rt>.62&&gamepadEdge(17,rt>.62))punch();
 }
 window.addEventListener('gamepadconnected',()=>showToast('Controller connected · Xbox controls ready'));
 window.addEventListener('gamepaddisconnected',()=>{state.gamepad=null;state.pad={x:0,z:0};showToast('Controller disconnected')});
 $('guide-toggle').addEventListener('click',()=>$('controller-guide').classList.toggle('open'));
 $('guide-close').addEventListener('click',()=>$('controller-guide').classList.remove('open'));
+$('voice-toggle').addEventListener('click',()=>{state.voiceMode=({voices:'bubbles',bubbles:'off',off:'voices'})[state.voiceMode];$('voice-toggle').textContent='VOICE: '+state.voiceMode.toUpperCase();saveGame();stopVoices();showToast('Street voices '+state.voiceMode+'.')});
+$('voice-toggle').textContent='VOICE: '+state.voiceMode.toUpperCase();
 $('close-map').addEventListener('click',()=>{if(state.mapOpen)openMap()});
 $('resume-game').addEventListener('click',()=>{if(state.paused)togglePause()});
 $('choices').addEventListener('click',()=>{state.choiceIndex=0});
 $('action').addEventListener('click',()=>interact());
 $('explore').addEventListener('click',()=>showToast('Follow the street. Tap people to hear their stories.'));
-$('close-dialog').addEventListener('click',()=>{$('dialog').classList.remove('open');state.modal=false});
+$('close-dialog').addEventListener('click',()=>{$('dialog').classList.remove('open');state.modal=false;stopVoices()});
 
 const raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2();
 renderer.domElement.addEventListener('pointerup',(event)=>{
@@ -404,17 +443,25 @@ actors.forEach(a=>{a.root.userData.actorId=a.id;a.root.traverse(o=>o.userData.ac
 const touchpad=$('touchpad');
 const dirs={up:[0,1],down:[0,-1],left:[-1,0],right:[1,0]};
 touchpad.querySelectorAll('button').forEach(btn=>{
-  btn.addEventListener('pointerdown',e=>{e.preventDefault();btn.setPointerCapture(e.pointerId);state.pad={x:dirs[btn.dataset.dir][0],z:dirs[btn.dataset.dir][1]}});
-  for(const name of ['pointerup','pointercancel','lostpointercapture'])btn.addEventListener(name,()=>{state.pad={x:0,z:0}});
+  btn.addEventListener('pointerdown',e=>{e.preventDefault();noteInput('touch');btn.setPointerCapture(e.pointerId);state.touch.x=dirs[btn.dataset.dir][0];state.touch.z=dirs[btn.dataset.dir][1];state.pad={...state.touch}});
+  for(const name of ['pointerup','pointercancel','lostpointercapture'])btn.addEventListener(name,()=>{state.touch.x=0;state.touch.z=0;state.pad={x:0,z:0}});
+});
+$('touch-actions').querySelectorAll('button').forEach(btn=>{
+  const action=btn.dataset.touch;
+  btn.addEventListener('pointerdown',e=>{e.preventDefault();noteInput('touch');btn.setPointerCapture(e.pointerId);if(action==='run')state.touch.run=true;if(action==='gas')state.touch.gas=1;if(action==='brake')state.touch.brake=1;if(action==='handbrake')state.touch.handbrake=true});
+  const release=()=>{if(action==='run')state.touch.run=false;if(action==='gas')state.touch.gas=0;if(action==='brake')state.touch.brake=0;if(action==='handbrake')state.touch.handbrake=false};
+  for(const name of ['pointerup','pointercancel','lostpointercapture'])btn.addEventListener(name,release);
+  btn.addEventListener('click',()=>{if(action==='jump')jump();if(action==='punch')punch();if(action==='vehicle')toggleVehicle();if(action==='horn')horn()});
 });
 window.addEventListener('keydown',e=>{
   if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();
-  const key=e.key.toLowerCase(),fresh=!state.keys.has(key);state.keys.add(key);
+  const key=e.key.toLowerCase(),fresh=!state.keys.has(key);state.keys.add(key);if(fresh)noteInput('keyboard');
   if(!fresh)return;
   if(key==='e')interact();
   if(key===' '){if(state.modal)confirmChoice();else jump()}
   if(key==='x')jump();if(key==='b')punch();if(key==='y')toggleVehicle();if(key==='r')horn();
   if(key==='m')openMap();if(key==='p')togglePause();
+  if(key==='v'){$('voice-toggle').click()}
   if(key==='escape')closeTopLayer();
   if(key==='arrowup')moveChoice(-1);if(key==='arrowdown')moveChoice(1);
 });
@@ -431,9 +478,16 @@ function animate(){
   let forward=(k.has('w')||k.has('arrowup')?1:0)-(k.has('s')||k.has('arrowdown')?1:0)+state.pad.z;
   let side=(k.has('d')||k.has('arrowright')?1:0)-(k.has('a')||k.has('arrowleft')?1:0)+state.pad.x;
   const cameraInput=state.cameraInput||{x:0,y:0};
-  if(!state.modal){state.cameraYaw-=cameraInput.x*dt*2.2;state.cameraPitch=THREE.MathUtils.clamp(state.cameraPitch-cameraInput.y*dt*1.2,.2,1.15)}
-  state.sprint=!!(k.has('shift')||state.gamepad&&pressGamepadButton(0));
-  if(state.vehicle&&!state.modal){state.vehicle.speed+=(k.has('w')?7:0)*dt-(k.has('s')?8:0)*dt;state.vehicle.speed=THREE.MathUtils.clamp(state.vehicle.speed,-5,12)}
+  if(!state.modal){state.cameraYaw-=cameraInput.x*dt*2.6;state.cameraPitch=THREE.MathUtils.clamp(state.cameraPitch+cameraInput.y*dt*1.2,.2,1.15)}
+  state.sprint=!!(k.has('shift')||state.gamepad&&pressGamepadButton(0)||state.touch.run||Math.hypot(state.pad.x,state.pad.z)>.95);
+  if(state.vehicle&&!state.modal){
+    const keyboardThrottle=(k.has('w')?1:0)-(k.has('s')?1:0);
+    const touchThrottle=(state.touch.gas||0)-(state.touch.brake||0);
+    const throttle=state.gamepad?(Math.abs(state.throttle)>.01?state.throttle:keyboardThrottle):(Math.abs(touchThrottle)>.01?touchThrottle:keyboardThrottle);
+    state.vehicle.speed+=throttle*10*dt;
+    if(Math.abs(throttle)<.01)state.vehicle.speed*=Math.exp(-.52*dt);
+    state.vehicle.speed=THREE.MathUtils.clamp(state.vehicle.speed,-5,12);
+  }
   const mag=Math.hypot(forward,side);state.moving=(mag>.08||state.vehicle&&Math.abs(state.vehicle.speed)>.08)&&!state.modal;
   if(state.moving){
     forward/=Math.max(1,mag);side/=Math.max(1,mag);
@@ -469,6 +523,11 @@ function animate(){
     a.root.position.y=Math.sin(state.clock*1.7+i)*.018;
     a.ring.rotation.z=state.clock*.3;
   });
+  if(state.activeVoice?.actor){const pos=state.activeVoice.actor.root.position.clone().add(new THREE.Vector3(0,2.6,0)).project(camera);const bubble=$('speech-bubble');bubble.style.left=((pos.x*.5+.5)*innerWidth)+'px';bubble.style.top=((-pos.y*.5+.5)*innerHeight)+'px'}
+  if(!state.modal&&state.voiceMode!=='off'&&!state.activeVoice){
+    state.voiceTimer-=dt;
+    if(state.voiceTimer<=0){const nearby=actors.filter(a=>!a.player&&distance(player,a)<16).sort((a,b)=>distance(player,a)-distance(player,b));if(nearby.length){const chosen=nearby[Math.floor(Math.random()*Math.min(3,nearby.length))];streetTalk(chosen.id==='zanele'?'ambient':Math.random()<.25?'greet':'ambient',chosen,1)}state.voiceTimer=4+Math.random()*5}
+  }
   freePlaces.forEach(p=>{p.pin.rotation.y=state.clock*.65;p.pin.position.y=2.88+Math.sin(state.clock*2)*.14;p.circle.rotation.z=state.clock*.12});
   missionBeacon.pin.rotation.y=state.clock*.65;missionBeacon.pin.position.y=2.88+Math.sin(state.clock*2)*.14;missionBeacon.circle.rotation.z=state.clock*.12;
   const radius=10,cp=Math.cos(state.cameraPitch),sp=Math.sin(state.cameraPitch);
@@ -477,9 +536,19 @@ function animate(){
   updateContact();renderer.render(scene,camera);
 }
 
+let installEvent=null;
+window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();installEvent=event;$('install-app').classList.add('show')});
+$('install-app').addEventListener('click',async()=>{if(!installEvent)return;installEvent.prompt();await installEvent.userChoice;installEvent=null;$('install-app').classList.remove('show')});
+window.addEventListener('appinstalled',()=>{$('install-app').classList.remove('show');showToast('Mother City installed · see you in Salt River.')});
+const standalone=matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+const ios=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!standalone;
+if(ios)setTimeout(()=>showToast('Install: tap Share, then Add to Home Screen.'),1800);
+const localHost=['localhost','127.0.0.1','::1'].includes(location.hostname);
+if('serviceWorker'in navigator&&window.self===window.top&&(!localHost||new URLSearchParams(location.search).has('sw'))){navigator.serviceWorker.register('./service-worker.js').catch(()=>showToast('Offline install is unavailable in this browser.'))}
+
 window.addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setPixelRatio(Math.min(devicePixelRatio||1,1.5));renderer.setSize(innerWidth,innerHeight)});
 camera.position.set(state.x,1+10*Math.sin(state.cameraPitch),state.z+10*Math.cos(state.cameraPitch));camera.lookAt(state.x,1,state.z);
 player.root.userData.actorId='player';
-setChapter(0);updateContact();$('loading').classList.add('hidden');animate();
+  setChapter(state.chapter);$('respect').textContent=String(state.respect).padStart(3,'0');updateContact();$('loading').classList.add('hidden');animate();
 
 
